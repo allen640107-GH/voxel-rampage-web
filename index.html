@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#120a1e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="description" content="方塊巨獸大暴走 Voxel Rampage：操控巨獸在體素城市裡踩踏、甩尾、衝撞、吼叫，把大樓打成滿天方塊！">
+<title>方塊巨獸大暴走 Voxel Rampage</title>
+<link rel="icon" href="img/icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div id="loading" class="screen">
+  <div class="loadBox"><div class="title small">方塊巨獸大暴走</div><div class="bar"><i id="loadBar"></i></div><div id="loadTxt" class="big">載入中…</div></div>
+</div>
+
+<div id="intro" class="screen hidden">
+  <video id="introV" src="video/intro.mp4" poster="video/intro_poster.jpg" playsinline webkit-playsinline muted preload="auto"></video>
+  <button id="iBigPlay" class="bigPlay hidden" aria-label="播放片頭（有聲音）"><span class="tri"></span><b>點一下播放</b></button>
+  <div id="iSound" class="iSound hidden"><span class="spk">🔊</span><span>點一下開啟聲音</span></div>
+  <button id="iSkip" class="skip hidden">跳過動畫 ▶▶</button>
+</div>
+
+<div id="menu" class="screen hidden">
+  <div class="menuBg"></div>
+  <div class="menuInner">
+    <div class="titleBox"><h1 class="title">方塊巨獸<br>大暴走</h1>
+    <div class="sub">VOXEL RAMPAGE</div></div>
+    <div class="menuBtns">
+      <button id="mStart" class="btn primary huge">開始暴走！</button>
+      <button id="mSettings" class="btn">設定</button>
+      <button id="mCredits" class="btn">製作名單</button>
+      <button id="mIntro" class="btn">重看片頭</button>
+    </div>
+  </div>
+  <div class="ver" id="verTxt"></div>
+</div>
+
+<div id="select" class="screen hidden">
+  <div class="topBar"><button id="sBack" class="btn sm">◀ 返回</button><h2>選擇巨獸與城市</h2></div>
+  <div class="selScroll">
+    <h3>① 選擇巨獸</h3>
+    <div id="monCards" class="cards"></div>
+    <h3>② 選擇城市</h3>
+    <div id="sceneCards" class="cards"></div>
+    <div class="spacer"></div>
+  </div>
+  <div class="goBar"><button id="sGo" class="btn primary huge">出發！</button></div>
+</div>
+
+<div id="hud" class="hidden">
+  <div class="hudTop">
+    <button id="hPause" class="btn icon" aria-label="暫停">❚❚</button>
+    <div class="hBox"><small>分數</small><b id="hScore">0</b></div>
+    <div class="hBox time"><small>時間</small><b id="hTime">1:30</b></div>
+  </div>
+  <div class="hudBar"><div class="pbar"><i id="hPct"></i><span class="star s1">★</span><span class="star s2">★</span><span class="star s3">★</span></div><b id="hPctTxt">0%</b></div>
+  <div id="hCombo" class="combo hidden"></div>
+  <div id="hBanner" class="banner hidden"></div>
+  <div id="pops"></div>
+  <div id="joy" class="joy"><div class="joyBase"><div class="joyKnob"></div></div></div>
+  <div id="atk" class="atk">
+    <button class="ab" data-k="0"><span class="cdv"></span><b>踩踏</b><kbd>J</kbd></button>
+    <button class="ab" data-k="1"><span class="cdv"></span><b>甩尾</b><kbd>K</kbd></button>
+    <button class="ab" data-k="2"><span class="cdv"></span><b>衝撞</b><kbd>L</kbd></button>
+    <button class="ab roar" data-k="3"><span class="cdv"></span><b>吼叫</b><kbd>空白</kbd></button>
+  </div>
+  <div id="keysHint" class="keysHint">移動 WASD／方向鍵　轉視角 Q E 或拖曳　攻擊 J K L 空白</div>
+</div>
+
+<div id="pause" class="overlay hidden"><div class="panel">
+  <h2>暫停</h2>
+  <button id="pResume" class="btn primary">繼續</button>
+  <button id="pRestart" class="btn">重新開始</button>
+  <button id="pMute" class="btn">聲音：開</button>
+  <button id="pQuit" class="btn">回到選單</button>
+</div></div>
+
+<div id="result" class="overlay hidden"><div class="panel rPanel">
+  <div class="rInfo">
+  <h2 id="rTitle">時間到！</h2>
+  <div id="rStars" class="rStars"></div>
+  <div class="rRow"><span>破壞率</span><b id="rPct">0%</b></div>
+  <div class="rRow"><span>分數</span><b id="rScore">0</b></div>
+  <div class="rRow"><span>最高紀錄</span><b id="rBest">0</b></div>
+  <div class="rRow"><span>摧毀大樓／汽車</span><b id="rStat">0／0</b></div>
+  <div id="rMsg" class="rMsg"></div>
+  </div>
+  <div class="rBtns">
+  <button id="rNext" class="btn primary">下一個城市 ▶</button>
+  <button id="rAgain" class="btn">再玩一次</button>
+  <button id="rSel" class="btn">選擇巨獸／城市</button>
+  </div>
+</div></div>
+
+<div id="settings" class="screen hidden"><div class="panel wide">
+  <h2>設定</h2>
+  <label class="row">音樂音量 <input id="stMusic" type="range" min="0" max="1" step="0.05"></label>
+  <label class="row">音效音量 <input id="stSfx" type="range" min="0" max="1" step="0.05"></label>
+  <button id="stMute" class="btn">聲音：開</button>
+  <div class="row">畫質
+    <select id="stQ"><option value="auto">自動</option><option value="2">高</option><option value="1">中</option><option value="0">低（省電）</option></select>
+  </div>
+  <button id="stShake" class="btn">畫面震動：開</button>
+  <div id="stInfo" class="info"></div>
+  <button id="stBack" class="btn primary">返回</button>
+</div></div>
+
+<div id="credits" class="screen hidden"><div class="panel wide scroll">
+  <h2>製作名單</h2>
+  <div class="cred">
+    <p><b>製作人／遊戲企劃：Allen Ho</b></p>
+    <p><b>美術與片頭影片</b>：封面、巨獸頭像、城市縮圖、片頭影片皆以 Grok Imagine（xAI）生成。遊戲中的城市與巨獸是程式即時生成的體素模型。</p>
+    <p><b>3D 引擎</b>：three.js r187（MIT License）</p>
+    <p><b>標題字型</b>：Noto Serif CJK TC Bold（SIL Open Font License 1.1）</p>
+    <p><b>背景音樂</b>（Kevin MacLeod，CC BY 4.0）：<br>"Five Armies"、"Cretaceous Dawn"、"Dentaneosuchus Hunt"、"Undaunted"、"Strength of the Titans"、"The Curtain Rises"、"The Reveal"<br>Kevin MacLeod (incompetech.com)<br>Licensed under Creative Commons: By Attribution 4.0<br>https://creativecommons.org/licenses/by/4.0/</p>
+    <p><b>音效</b>（CC0 1.0 公眾領域）：Kenney（kenney.nl）、rubberduck、CaveboyTup、IgnasD、artisticdude（OpenGameArt.org）</p>
+    <p>完整來源與授權請見 CREDITS.md。</p>
+  </div>
+  <button id="cBack" class="btn primary">返回</button>
+</div></div>
+
+<div id="rotateHint" class="hidden"></div>
+<script src="js/audio.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
