@@ -115,8 +115,11 @@ async def main():
             check(await pg.evaluate("__vr.G.input.x===0&&__vr.G.input.y===0"), "joystick released -> stops")
             check(cd > 0 or (await pg.evaluate("__vr.state().score")) > s0, f"second finger on 攻擊鍵 triggers attack while steering (cd {cd:.2f})")
             # 單指點攻擊鍵
-            await pg.wait_for_timeout(700); await tap_sel(".ab[data-k='3']"); await pg.wait_for_timeout(300)
-            check(await pg.evaluate("__vr.G.mon.cd[3]>0"), "tap 吼叫 button -> roar")
+            await pg.wait_for_timeout(700); await tap_sel(".ab[data-k='3']")
+            ok = True
+            try: await pg.wait_for_function("__vr.G.mon.cd[3]>0", timeout=4000)
+            except Exception: ok = False
+            check(ok, "tap 吼叫 button -> roar")
         else:
             p0 = await pg.evaluate("__vr.state().mon")
             await pg.keyboard.down("w"); await pg.wait_for_timeout(3500); await pg.keyboard.up("w")
@@ -124,8 +127,11 @@ async def main():
             check(moved > 2, f"keyboard W moves monster ({moved:.1f})")
             await pg.keyboard.press("j"); await pg.wait_for_timeout(100)
             check(await pg.evaluate("__vr.G.mon.cd[0]>0"), "J -> stomp")
-            await pg.wait_for_timeout(700); await pg.click(".ab[data-k='3']"); await pg.wait_for_timeout(300)
-            check(await pg.evaluate("__vr.G.mon.cd[3]>0"), "click 吼叫 button -> roar")
+            await pg.wait_for_timeout(700); await pg.click(".ab[data-k='3']")
+            ok = True
+            try: await pg.wait_for_function("__vr.G.mon.cd[3]>0", timeout=4000)
+            except Exception: ok = False
+            check(ok, "click 吼叫 button -> roar (buffered until the stomp animation ends)")
         await pg.wait_for_timeout(1200)
         await pg.screenshot(path=f"{OUT}/{D}_06_attack.png")
         # 暫停
