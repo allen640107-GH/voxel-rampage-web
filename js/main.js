@@ -1,12 +1,12 @@
 // 方塊巨獸大暴走 Voxel Rampage — 主程式
 import * as THREE from "../vendor/three.module.js";
-import { World, W, D, H, MAT } from "./world.js";
+import { World, W, D, H, MAT, RES2 } from "./world.js";
 import { SCENES, SCENE_ORDER, generate, paintGround, rng } from "./city.js";
 import { MONSTERS, MONSTER_ORDER, buildMonster } from "./monster.js";
 import { Debris, Dust, Rings, Falling } from "./effects.js";
 import { loadSave, writeSave, SAVE_VERSION } from "./save.js";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 const AUDIO = window.AUDIO;
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -28,9 +28,9 @@ function detectQuality() {
   return isTouch ? 1 : 2;
 }
 const QL = [
-  { pr: 1, shadows: false, debris: 240, dust: 50, traffic: 8, perHit: 16, aa: false },
-  { pr: 1.5, shadows: false, debris: 460, dust: 90, traffic: 12, perHit: 32, aa: true },
-  { pr: 2, shadows: true, debris: 760, dust: 140, traffic: 16, perHit: 56, aa: true },
+  { pr: 1, shadows: false, debris: 300, grit: 120, dust: 50, traffic: 8, perHit: 20, aa: false },
+  { pr: 1.5, shadows: false, debris: 560, grit: 220, dust: 90, traffic: 12, perHit: 40, aa: true },
+  { pr: 2, shadows: true, debris: 900, grit: 360, dust: 140, traffic: 16, perHit: 68, aa: true },
 ];
 const quality = { level: save.settings.quality === "auto" ? detectQuality() : +save.settings.quality, auto: save.settings.quality === "auto", drops: 0 };
 
@@ -46,7 +46,13 @@ function applyQuality() {
   renderer.shadowMap.enabled = q.shadows;
   if (G.world) G.world.setShadows(q.shadows);
   if (G.sun) G.sun.castShadow = q.shadows;
+  if (G.mon && G.mon.g.userData.lod !== quality.level) rebuildMonster();
   resize();
+}
+function rebuildMonster() { // 畫質改變 → 換成對應 LOD 的模型
+  const m = G.mon, old = m.g, g = buildMonster(m.def.id, mats, { quality: quality.level });
+  old.parent.add(g); old.removeFromParent(); old.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+  m.g = g; m.nodes = g.userData.nodes;
 }
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -105,7 +111,7 @@ function skyTexture(cols) {
 }
 function disposeScene() {
   if (!G.scene) return;
-  G.world && G.world.dispose(); G.debris && G.debris.dispose(); G.dust && G.dust.dispose(); G.rings && G.rings.clear(); G.falling && G.falling.clear();
+  G.world && G.world.dispose(); G.debris && G.debris.dispose(); G.grit && G.grit.dispose(); G.dust && G.dust.dispose(); G.rings && G.rings.clear(); G.falling && G.falling.clear();
   G.scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material !== mats.lit && o.material !== mats.glow && o.material !== mats.mon && o.material !== mats.monGlow && o.material !== mats.debris) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } });
   if (G.scene.background && G.scene.background.dispose) G.scene.background.dispose();
   G.scene = null; G.world = null;
@@ -153,12 +159,13 @@ function buildScene(sceneId, monId) {
   }
   // 特效
   G.debris = new Debris(scene, q.debris, mats.debris);
+  G.grit = new Debris(scene, q.grit, mats.debris, { fine: true }); // 細粉屑
   G.dust = new Dust(scene, q.dust, S.night ? 0x6a5a80 : 0xc9bfae);
   G.rings = new Rings(scene);
   G.falling = new Falling(scene, mats, game);
   // 巨獸
   const def = MONSTERS[monId];
-  const mg = buildMonster(monId, mats); scene.add(mg);
+  const mg = buildMonster(monId, mats, { quality: quality.level }); scene.add(mg);
   G.mon = { def, g: mg, nodes: mg.userData.nodes, x: info.spawn[0], z: info.spawn[1], h: Math.PI * 0.75, vx: 0, vz: 0, ph: 0, t: 0, cd: [0, 0, 0, 0], anim: null, events: [], moving: 0, crushT: 0, stuck: 0 };
   const blob = new THREE.Mesh(new THREE.CircleGeometry(def.bodyR * 1.5, 24), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false }));
   blob.rotation.x = -Math.PI / 2; blob.position.y = 0.06; scene.add(blob); G.mon.blob = blob;
@@ -202,7 +209,7 @@ function explodeCar(c) {
 
 // ---------------- 破壞與分數 ----------------
 const game = {
-  get debris() { return G.debris; }, get dust() { return G.dust; }, get world() { return G.world; }, quality,
+  get debris() { return G.debris; }, get grit() { return G.grit; }, get dust() { return G.dust; }, get world() { return G.world; }, quality,
   shake: (a) => shake(a), sfx: (n) => sfx(n), impact: (x, y, z, r) => hit(x, y + 0.5, z, r, { chain: true }),
   onFallDone: () => {},
 };
@@ -215,6 +222,7 @@ function hit(x, y, z, r, opt = {}) {
       let dx = px - x, dy = py - y, dz = pz - z; const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
       const sp = 6 + Math.random() * 10, push = opt.push || 0;
       G.debris.spawn(px, py, pz, mat, dx * sp + (opt.dirX || 0) * push + (Math.random() - 0.5) * 3, Math.max(dy, 0.2) * sp + 4 + Math.random() * 6, dz * sp + (opt.dirZ || 0) * push + (Math.random() - 0.5) * 3);
+      if (Math.random() < 0.6) G.grit.spawn(px, py, pz, mat, dx * sp * 0.6 + (Math.random() - 0.5) * 5, Math.max(dy, 0.2) * sp * 0.5 + 2 + Math.random() * 4, dz * sp * 0.6 + (Math.random() - 0.5) * 5);
     },
   });
   // 打到車流
@@ -223,7 +231,7 @@ function hit(x, y, z, r, opt = {}) {
   let pts = res.score;
   // 連通性：懸空的整群掉下來
   const fl = world.findFloating(res.seeds || []);
-  if (fl.length) { let s = 0; for (let k = 3; k < fl.length; k += 4) s += MAT[fl[k]].s; pts += s * 0.5; G.falling.add(fl, { fromX: m.x, fromZ: m.z }); if (fl.length / 4 > 60) sfx("rock"); }
+  if (fl.length) { let s = 0; for (let k = 3; k < fl.length; k += 4) s += MAT[fl[k]].s; pts += s * 0.5; G.falling.add(fl, { fromX: m.x, fromZ: m.z }); if (fl.length / 4 / RES2 > 60) sfx("rock"); }
   // 底部被打掉 → 整棟倒塌
   const cols = world.checkBase(res.bids);
   for (const c of cols) {
@@ -232,11 +240,11 @@ function hit(x, y, z, r, opt = {}) {
     banner(c.b.kind === "crane" ? "起重機倒了！" : c.b.kind === "ship" ? "貨輪沉沒！" : "大樓倒塌！");
     sfx("erupt"); sfx("boom"); shake(1.0);
   }
-  if (res.n >= 3) { G.combo++; G.comboT = 2.2; }
+  if (res.eq >= 3) { G.combo++; G.comboT = 2.2; }
   addScore(pts, x, y + 2, z);
-  if (res.glass > 4) sfx("shatter", { vol: 0.7 }); else if (res.n > 2) sfx(Math.random() < 0.5 ? "rock" : "hit", { vol: 0.8 });
-  for (let i = 0; i < Math.min(3, 1 + res.n / 40); i++) G.dust.spawn(x + (Math.random() - 0.5) * r, Math.max(1, y), z + (Math.random() - 0.5) * r, 1.6 + r * 0.3);
-  save.totals.voxels += res.n;
+  if (res.glass > 4) sfx("shatter", { vol: 0.7 }); else if (res.eq > 2) sfx(Math.random() < 0.5 ? "rock" : "hit", { vol: 0.8 });
+  for (let i = 0; i < Math.min(4, 1 + res.eq / 30); i++) G.dust.spawn(x + (Math.random() - 0.5) * r, Math.max(1, y), z + (Math.random() - 0.5) * r, 1.6 + r * 0.3);
+  save.totals.voxels += Math.round(res.eq);
   return res;
 }
 function multOf(combo) { return 1 + Math.min(4, Math.floor(combo / 10) * 0.5); }
@@ -348,38 +356,69 @@ function updateMonster(dt) {
   if (m.anim) { m.anim.t += dt; if (m.anim.t >= m.anim.dur) m.anim = null; }
   for (let i = m.events.length - 1; i >= 0; i--) { const e = m.events[i]; e.t -= dt; if (e.t <= 0) { m.events.splice(i, 1); e.fn(); } }
   // 腳步聲與震動
-  const prevPh = m.ph; m.ph += m.moving * dt * 0.9 / Math.max(0.6, d.vs * 1.8);
+  const prevPh = m.ph; m.ph += m.moving * dt * 0.9 / Math.max(0.6, d.stride || 1);
   if (Math.floor(prevPh / Math.PI) !== Math.floor(m.ph / Math.PI) && m.moving > 2) { sfx("rock", { vol: 0.35, rate: 0.6 }); shake(0.06); }
   animateMonster(dt);
 }
 function angleDiff(a, b) { let d = a - b; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; }
 function animateMonster(dt) {
-  const m = G.mon, N = m.nodes, id = m.def.id, a = m.anim;
-  const mv = Math.min(1, m.moving / m.def.speed), ph = m.ph, s = Math.sin(ph);
-  const p = a ? a.t / a.dur : 0, bump = a ? Math.sin(Math.min(1, p) * Math.PI) : 0;
-  const R = (n, x = 0, y = 0, z = 0) => { if (N[n]) N[n].rotation.set(x, y, z); };
-  R("legL", s * 0.55 * mv); R("legR", -s * 0.55 * mv); R("legL2", -s * 0.5 * mv); R("legR2", s * 0.5 * mv);
-  if (N.body) { N.body.position.y = N.body.userData.base.y + Math.abs(s) * 0.25 * mv + Math.sin(m.t * 2) * 0.05; N.body.rotation.set(0, 0, s * 0.04 * mv); }
-  const sway = Math.sin(m.t * 1.6) * 0.1 + s * 0.12 * mv;
-  R("tail1", 0, sway); R("tail2", 0.04, sway * 1.3); R("tail3", 0.06, sway * 1.6);
-  R("head", Math.sin(m.t * 1.3) * 0.05, 0); R("jaw", 0.05 + Math.max(0, Math.sin(m.t * 0.9)) * 0.06);
-  R("armL", -s * 0.6 * mv); R("armR", s * 0.6 * mv); R("arms", 0.2);
+  const m = G.mon, N = m.nodes, id = m.def.id, a = m.anim, t = m.t;
+  let mv = Math.min(1, m.moving / m.def.speed), s = Math.sin(m.ph), c = Math.cos(m.ph);
+  const p = a ? Math.min(1, a.t / a.dur) : 0, bump = a ? Math.sin(p * Math.PI) : 0;
+  if (a && a.k === 2) { s = Math.sin(t * 18); c = Math.cos(t * 18); mv = 1; } // 衝撞：快步
+  const idle = 1 - mv, br = Math.sin(t * 2.1);
+  for (const k in N) { const o = N[k]; o.rotation.set(0, 0, 0); o.position.copy(o.userData.base); o.scale.set(1, 1, 1); }
+  const R = (n, x = 0, y = 0, z = 0) => { const o = N[n]; if (o) { o.rotation.x += x; o.rotation.y += y; o.rotation.z += z; } };
+  // 眨眼
+  m.blink = (m.blink ?? 2) - dt; if (m.blink < -0.13) m.blink = 1.6 + Math.random() * 3.4;
+  if (N.eyes && m.blink < 0) N.eyes.scale.y = 0.12;
+  // 呼吸、身體起伏
+  const B = N.body;
+  B.position.y += -Math.abs(s) * 0.22 * mv + br * 0.07 * idle;
+  B.scale.set(1 + br * 0.012 * idle, 1 + br * 0.016 * idle, 1);
+  R("body", (id === "ape" ? 0.1 : 0.05) * mv, s * 0.06 * mv, s * 0.05 * mv);
+  // 頭：待機時左右張望、走路時隨步伐點頭
+  R("head", Math.sin(t * 1.1) * 0.05 * idle + Math.sin(m.ph * 2) * 0.05 * mv, Math.sin(t * 0.43) * 0.3 * idle + Math.sin(t * 1.9) * 0.04, Math.sin(t * 0.7) * 0.05 * idle - s * 0.04 * mv);
+  R("jaw", 0.05 + Math.max(0, Math.sin(t * 0.8)) * 0.1 * idle);
+  // 尾巴：由根部往尾端傳遞的波動
+  for (let i = 1; i <= 4; i++) R("tail" + i, 0.03 * Math.sin(t * 1.3 - i * 0.5), Math.sin(t * 1.7 - i * 0.6) * (0.06 + 0.03 * i) * (0.6 + 0.4 * idle) + s * 0.07 * i * mv / 2);
+  // 步態
+  if (id === "trex" || id === "ape") {
+    const th = id === "ape" ? "leg" : "thigh", amp = id === "ape" ? 0.45 : 0.55;
+    for (const [S, sg] of [["L", 1], ["R", -1]]) {
+      const tq = sg * s * amp * mv, kn = Math.max(0, -sg * c) * 0.85 * mv;
+      R(th + S, tq - 0.03 * br * idle); R("shin" + S, kn + 0.05 * br * idle); R("foot" + S, -(tq + kn) * 0.85);
+    }
+  }
+  if (id === "trex") { R("armL", 0.25 + Math.sin(t * 2.3) * 0.12, 0, 0.08); R("armR", 0.25 + Math.sin(t * 2.3 + 1) * 0.12, 0, -0.08); }
+  if (id === "ape") {
+    for (const [S, sg] of [["L", 1], ["R", -1]]) { R("arm" + S, -sg * s * 0.5 * mv, 0, sg * (0.04 + br * 0.03 * idle)); R("fore" + S, -Math.max(0, sg * c) * 0.35 * mv); }
+  }
+  if (id === "ankylo") { R("legFL", s * 0.45 * mv); R("legBR", s * 0.45 * mv); R("legFR", -s * 0.45 * mv); R("legBL", -s * 0.45 * mv); }
+  // 攻擊
   let lift = 0, spin = 0;
   if (a) {
-    if (a.k === 0) {
-      if (id === "ape") { R("armL", -2.6 * bump); R("armR", -2.6 * bump); if (N.body) N.body.rotation.x = 0.35 * bump; lift = bump * 0.8; }
-      else { R("legL", -0.9 * bump); if (N.body) N.body.rotation.x = -0.12 * bump; lift = bump * 1.4; R("legL2", -0.6 * bump); }
-    } else if (a.k === 1) {
-      spin = (1 - Math.pow(1 - Math.min(1, p), 2)) * Math.PI * 2;
-      if (id === "ape") { R("armL", -1.4, 0, -1.2 * bump); R("armR", -1.4, 0, 1.2 * bump); }
-      else { R("tail1", 0, 0.5 * bump); R("tail2", 0, 0.5 * bump); R("tail3", 0, 0.5 * bump); }
-    } else if (a.k === 2) {
-      if (N.body) N.body.rotation.x = 0.22; R("head", 0.3); R("legL", Math.sin(m.t * 20) * 0.8); R("legR", -Math.sin(m.t * 20) * 0.8);
-      R("legL2", -Math.sin(m.t * 20) * 0.7); R("legR2", Math.sin(m.t * 20) * 0.7);
+    if (a.k === 0) { // 踩踏：蓄力 → 重擊 → 壓扁回彈
+      const up = p < 0.4 ? Math.sin((p / 0.4) * Math.PI / 2) : p < 0.5 ? 1 - (p - 0.4) / 0.1 : 0, sq = p > 0.49 && p < 0.85 ? Math.sin(((p - 0.49) / 0.36) * Math.PI) : 0;
+      B.scale.y *= 1 - 0.06 * sq; B.scale.x *= 1 + 0.03 * sq;
+      if (id === "ape") { R("armL", -2.6 * up + 0.3 * sq); R("armR", -2.6 * up + 0.3 * sq); R("foreL", -0.6 * up); R("foreR", -0.6 * up); R("body", -0.25 * up + 0.35 * sq); lift = up * 0.6; R("jaw", 0.45 * up); }
+      else if (id === "ankylo") { R("body", -0.22 * up + 0.06 * sq); R("legFL", -0.6 * up); R("legFR", -0.6 * up); R("head", 0.2 * sq); lift = up * 1.2; }
+      else { R("thighL", -0.9 * up); R("shinL", 0.9 * up); R("body", -0.1 * up + 0.1 * sq); R("head", 0.2 * sq); R("jaw", 0.3 * up); lift = up; }
+    } else if (a.k === 1) { // 甩尾／橫掃：尾巴延遲跟上
+      spin = (1 - Math.pow(1 - p, 2)) * Math.PI * 2;
+      for (let i = 1; i <= 4; i++) R("tail" + i, 0, -(0.25 + 0.12 * i) * bump);
+      R("body", 0, 0, 0.08 * bump);
+      if (id === "ape") { R("armL", -1.5 * bump, 0, 0.9 * bump); R("armR", -1.5 * bump, 0, -0.9 * bump); R("foreL", -0.3 * bump); R("foreR", -0.3 * bump); }
+    } else if (a.k === 2) { // 衝撞：前傾、低頭
+      R("body", id === "ape" ? 0.35 : 0.2); R("head", id === "ankylo" ? 0.35 : 0.25);
       if (id === "ape") { R("armL", -1.2); R("armR", -1.2); }
-    } else if (a.k === 3) {
-      R("head", -0.55 * bump); R("jaw", 0.7 * bump);
-      if (id === "ape") { R("armL", -1.3 + Math.sin(m.t * 22) * 0.45, 0, -0.5); R("armR", -1.3 - Math.sin(m.t * 22) * 0.45, 0, 0.5); }
+      if (id === "trex") R("jaw", 0.35);
+    } else if (a.k === 3) { // 吼叫：仰頭張嘴、全身顫動
+      const e = p < 0.25 ? p / 0.25 : p < 0.8 ? 1 : (1 - p) / 0.2, sh = Math.sin(t * 40) * 0.03 * e;
+      R("head", -0.55 * e, sh); R("jaw", 0.75 * e); R("body", -0.12 * e, 0, sh);
+      for (let i = 1; i <= 4; i++) R("tail" + i, -0.12 * e);
+      if (id === "ape") { R("armL", -1.3 + Math.sin(t * 22) * 0.45, 0, -0.5); R("armR", -1.3 - Math.sin(t * 22) * 0.45, 0, 0.5); R("foreL", -1.1); R("foreR", -1.1); }
+      if (id === "trex") { R("armL", -0.4 * e + sh * 8); R("armR", -0.4 * e - sh * 8); }
     }
   }
   m.g.position.set(m.x, lift, m.z); m.g.rotation.y = m.h + spin;
@@ -439,6 +478,7 @@ function updateCamera(dt) {
   if (G.shakeA > 0) { const a = G.shakeA * 0.6; camera.position.x += (Math.random() - 0.5) * a; camera.position.y += (Math.random() - 0.5) * a; camera.position.z += (Math.random() - 0.5) * a; G.shakeA = Math.max(0, G.shakeA - dt * 2.2); }
   camera.lookAt(camT);
   seeThru.uMon.value.set(m.x, 5, m.z); seeThru.uCam.value.copy(camera.position); seeThru.uRad.value = m.def.id === "ankylo" ? 9 : 7.5;
+  if (G.camOv) { const o = G.camOv; camera.position.set(o[0], o[1], o[2]); camera.lookAt(o[3], o[4], o[5]); seeThru.uRad.value = 0; } // 測試截圖用固定鏡頭
   if (G.sun) { const d = G.S.sunDir; G.sun.position.set(m.x + d[0] * 60, d[1] * 60, m.z + d[2] * 60); G.sun.target.position.set(m.x, 0, m.z); }
 }
 
@@ -539,8 +579,8 @@ function frame(now) {
     else if (G.world.pct() >= 0.92) endGame("all");
   }
   if (!G.paused) {
-    G.falling.update(dt); G.debris.update(dt); G.dust.update(dt); G.rings.update(dt);
-    G.world.rebuild(G.playing ? 10 : 30);
+    G.falling.update(dt); G.debris.update(dt); G.grit.update(dt); G.dust.update(dt); G.rings.update(dt);
+    G.world.rebuild(G.playing ? 6 : 12, G.playing ? 7 : 14);
   }
   updateCamera(dt);
   updateHud(dt);
@@ -720,6 +760,6 @@ function loadImages(list, onEach) { return Promise.all(list.map((src) => new Pro
 Object.assign(window.__vr, {
   startGame, attack, endGame, setPaused, autopilot: (b) => { G.autopilot = !!b; }, pct: () => G.world ? G.world.pct() : 0,
   state: () => ({ screen: G.screen, playing: G.playing, over: G.over, time: G.time, score: G.score, pct: G.world ? G.world.pct() : 0, combo: G.combo, collapsed: G.collapsed, cars: G.cars,
-    debris: G.debris ? G.debris.alive : 0, debrisCap: G.debris ? G.debris.cap : 0, falling: G.falling ? G.falling.list.length : 0, fps: G.fps, quality: quality.level, mon: G.mon ? [G.mon.x, G.mon.z] : null, result: G.result || null, tris: renderer.info.render.triangles }),
+    debris: G.debris ? G.debris.alive : 0, debrisCap: G.debris ? G.debris.cap : 0, falling: G.falling ? G.falling.list.length : 0, fps: G.fps, quality: quality.level, mon: G.mon ? [G.mon.x, G.mon.z] : null, result: G.result || null, tris: renderer.info.render.triangles, monTris: G.mon ? G.mon.g.userData.tris : 0, monLod: G.mon ? G.mon.g.userData.lod : null }),
   setTime: (t) => { G.time = t; }, hit: (x, y, z, r) => hit(x, y, z, r), world: () => G.world, camera, renderer,
 });

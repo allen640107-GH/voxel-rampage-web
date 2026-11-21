@@ -30,7 +30,7 @@ async def main():
         ls = await load_with(v1); s = json.loads(ls[K])
         check(s["v"] == 2 and s["best"]["downtown"]["stars"] == 2 and s["unlocked"]["harbor"] is True and s["unlocked"]["neon"] is False and s["settings"]["music"] == 0.3 and s["settings"]["quality"] == "1" and s["introSeen"] is True, "v1 -> v2 keeps stars, unlocks, settings")
         check(ls.get(K + ".bak.v1") == v1, "v1 original backed up untouched")
-        check(await pg.evaluate("document.querySelector('#verTxt').textContent") == "v1.0.0", "game runs after migration")
+        check(await pg.evaluate("document.querySelector('#verTxt').textContent") == "v" + await pg.evaluate("__vr.VERSION"), "game runs after migration")
         # 目前版本：原樣保留
         cur = ls[K]; await pg.reload(); await pg.wait_for_selector("#menu", state="visible")
         check(await pg.evaluate("localStorage.getItem('%s')" % K) == cur, "v2 save untouched on reload")

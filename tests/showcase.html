@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Monster showcase</title>
+<style>html,body{margin:0;height:100%;background:#1b1430;overflow:hidden}canvas{display:block}#lbl{position:fixed;left:0;right:0;bottom:12px;display:flex;justify-content:space-around;color:#fff;font:900 26px sans-serif;text-shadow:0 2px 0 #000}</style></head>
+<body><div id="lbl"></div>
+<script type="module">
+// 巨獸模型展示（前後對比截圖用）：tests/showcase.html?view=front|side|back&q=0|1|2
+import * as THREE from "../vendor/three.module.js";
+import * as MON from "../js/monster.js";
+const P = new URLSearchParams(location.search), view = P.get("view") || "front", q = +(P.get("q") ?? 2);
+const r = new THREE.WebGLRenderer({ antialias: true }); r.setPixelRatio(1); r.setSize(innerWidth, innerHeight); r.outputColorSpace = THREE.SRGBColorSpace; r.shadowMap.enabled = true;
+document.body.appendChild(r.domElement);
+const s = new THREE.Scene(); s.background = new THREE.Color(0x2a2140);
+s.add(new THREE.HemisphereLight(0xcfe6ff, 0x5a4a40, 1.3)); const sun = new THREE.DirectionalLight(0xfff2dc, 2.4); sun.position.set(-20, 40, 30); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -40, right: 40, top: 30, bottom: -30, far: 120 }); s.add(sun);
+const gnd = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshLambertMaterial({ color: 0x8b8a84 })); gnd.rotation.x = -Math.PI / 2; gnd.receiveShadow = true; s.add(gnd);
+const mats = { lit: new THREE.MeshLambertMaterial({ vertexColors: true }), glow: new THREE.MeshBasicMaterial({ vertexColors: true }), mon: new THREE.MeshLambertMaterial({ vertexColors: true }), monGlow: new THREE.MeshBasicMaterial({ vertexColors: true }) };
+const only = P.get("only"), ids = only ? [only] : MON.MONSTER_ORDER, xs = [-24, 0, 26], yaw = { front: 0.5, side: Math.PI / 2, back: Math.PI + 0.5 }[view];
+let tris = 0; const t0 = performance.now(); const built = [];
+ids.forEach((id, i) => { const g = MON.buildMonster(id, mats, { quality: q }); g.position.x = only ? 0 : xs[i]; g.rotation.y = yaw; g.traverse((o) => { if (o.isMesh) { o.castShadow = true; tris += o.geometry.index ? o.geometry.index.count / 3 : 0; } }); s.add(g); built.push(g); });
+const buildMs = performance.now() - t0;
+document.getElementById("lbl").innerHTML = ids.map((id) => `<span>${MON.MONSTERS[id].name}</span>`).join("");
+const cam = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.5, 300); if (only) { cam.position.set(0, 10, 34); cam.lookAt(0, 6.5, 0); } else { cam.position.set(0, 14, 62); cam.lookAt(0, 6.5, 0); }
+let t = 0; function f() { requestAnimationFrame(f); if (window.MONANIM && MON.animatePose) { t += 0.016; built.forEach((g) => MON.animatePose(g, t)); } r.render(s, cam); } f();
+window.__show = { tris, buildMs };
+</script></body></html>

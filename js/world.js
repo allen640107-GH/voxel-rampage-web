@@ -1,12 +1,14 @@
 // 體素世界：網格資料、分塊網格化（面剔除 + 頂點環境光遮蔽）、破壞與「連通性支撐」倒塌判定。
 import * as THREE from "../vendor/three.module.js";
 
-export const W = 96, D = 96, H = 56, CS = 16;
-const CX = W / CS, CY = Math.ceil(H / CS), CZ = D / CS;
+// W/D/H 是「公尺」（遊戲邏輯、相機、碰撞都用公尺）；RES = 每公尺幾格體素（v1.1：0.5 公尺一格）
+export const W = 96, D = 96, H = 56, RES = 2, RES2 = RES * RES, CS = 32; // 分塊 32³ 格（16 公尺）→ draw call 少
+export const GW = W * RES, GD = D * RES, GH = H * RES; // 體素格數
+const CX = GW / CS, CY = Math.ceil(GH / CS), CZ = GD / CS;
 
 // 材質：c=顏色, s=分數, g=自發光, gl=玻璃, p=小物件（車／路燈／樹）
 export const MAT = [];
-function M(id, hex, s, o = {}) { MAT[id] = { id, hex, s, g: !!o.g, gl: !!o.gl, p: !!o.p, name: o.n || "" }; }
+function M(id, hex, s, o = {}) { MAT[id] = { id, hex, s: s / RES2, g: !!o.g, gl: !!o.gl, p: !!o.p, name: o.n || "" }; }
 M(1, 0xcfcbc2, 10); M(2, 0x8f8b85, 10); M(3, 0x5d93db, 15, { gl: 1 }); M(4, 0xb5543a, 10); M(5, 0x6b6460, 8);
 M(6, 0x7c8a96, 20); M(7, 0xf2b21b, 20); M(8, 0xc63c2c, 15); M(9, 0x2f6db5, 15); M(10, 0x3d9b4a, 15); M(11, 0xe8862a, 15);
 M(12, 0xe0342c, 30, { p: 1, n: "car" }); M(13, 0x2b7de0, 30, { p: 1, n: "car" }); M(14, 0xf4c430, 30, { p: 1, n: "car" }); M(15, 0x22303a, 30, { p: 1, n: "car" });
@@ -88,30 +90,37 @@ export function toGeometry(o) {
 }
 
 export class World {
+  // 內部全部以「體素格」為單位（0.5 公尺）；對外的 at/destroySphere/topSolid 與建築中心都用公尺
   constructor(scene, mats) {
     this.scene = scene; this.mats = mats; // { lit, glow }
-    this.vox = new Uint8Array(W * H * D); this.bid = new Uint16Array(W * H * D);
-    this.stamp = new Int32Array(W * H * D); this.gen = 1;
+    const N = GW * GH * GD;
+    this.vox = new Uint8Array(N); this.bid = new Uint16Array(N);
+    this.stamp = new Int32Array(N); this.gen = 1;
     this.chunks = []; this.dirty = new Set();
     this.buildings = [null]; this.totalB = 0; this.remainB = 0;
-    this.group = new THREE.Group(); scene.add(this.group);
-    this.get = (x, y, z) => (y < 0 ? 255 : (x < 0 || z < 0 || y >= H || x >= W || z >= D) ? 0 : this.vox[x + z * W + y * W * D]);
+    this.group = new THREE.Group(); this.group.scale.setScalar(1 / RES); scene.add(this.group);
+    this.get = (x, y, z) => (y < 0 ? 255 : (x < 0 || z < 0 || y >= GH || x >= GW || z >= GD) ? 0 : this.vox[x + z * GW + y * GW * GD]);
     this.shadows = false;
   }
-  idx(x, y, z) { return x + z * W + y * W * D; }
-  inb(x, y, z) { return x >= 0 && z >= 0 && y >= 0 && x < W && y < H && z < D; }
-  at(x, y, z) { return this.inb(x, y, z) ? this.vox[this.idx(x, y, z)] : 0; }
+  idx(x, y, z) { return x + z * GW + y * GW * GD; }
+  inb(x, y, z) { return x >= 0 && z >= 0 && y >= 0 && x < GW && y < GH && z < GD; }
+  vat(x, y, z) { return this.inb(x, y, z) ? this.vox[this.idx(x, y, z)] : 0; } // 體素座標
+  at(x, y, z) { return this.vat(Math.floor(x * RES), Math.floor(y * RES), Math.floor(z * RES)); } // 公尺座標
   set(x, y, z, m, b = 0) { if (!this.inb(x, y, z)) return; const i = this.idx(x, y, z); this.vox[i] = m; this.bid[i] = m ? b : 0; }
-  newBuilding(x0, z0, x1, z1, kind) { const b = { id: this.buildings.length, x0, z0, x1, z1, kind, total: 0, remain: 0, base0: 0, collapsed: false, dead: false }; this.buildings.push(b); return b; }
+  // 建築範圍用體素座標（含端點）；x0..x1/z0..z1 另存公尺版給自動駕駛等邏輯
+  newBuilding(vx0, vz0, vx1, vz1, kind) {
+    const b = { id: this.buildings.length, vx0, vz0, vx1, vz1, x0: vx0 / RES, z0: vz0 / RES, x1: (vx1 + 1) / RES, z1: (vz1 + 1) / RES, kind, total: 0, remain: 0, base0: 0, collapsed: false, dead: false };
+    this.buildings.push(b); return b;
+  }
   finalize() {
-    // 統計每棟建築的體素與底部（y<3）數量
-    for (let i = 0; i < this.vox.length; i++) { const b = this.bid[i]; if (b && this.vox[i]) { const B = this.buildings[b]; B.total++; if (i < W * D * 3) B.base0++; } }
+    const L = GW * GD, BASE = L * 3 * RES; // 底部 = 最下面 3 公尺
+    for (let i = 0; i < this.vox.length; i++) { const b = this.bid[i]; if (b && this.vox[i]) { const B = this.buildings[b]; B.total++; if (i < BASE) B.base0++; } }
     this.totalB = 0; for (const B of this.buildings) if (B) { B.remain = B.total; this.totalB += B.total; B.bx = 0; B.bz = 0; B.bn = 0; }
-    for (let i = 0; i < W * D * 3; i++) { const b = this.bid[i]; if (b && this.vox[i]) { const B = this.buildings[b], r = i % (W * D); B.bx += r % W; B.bz += (r / W) | 0; B.bn++; } }
-    for (const B of this.buildings) if (B) { B.cx = B.bn ? B.bx / B.bn + 0.5 : (B.x0 + B.x1 + 1) / 2; B.cz = B.bn ? B.bz / B.bn + 0.5 : (B.z0 + B.z1 + 1) / 2; }
+    for (let i = 0; i < BASE; i++) { const b = this.bid[i]; if (b && this.vox[i]) { const B = this.buildings[b], r = i % L; B.bx += r % GW; B.bz += (r / GW) | 0; B.bn++; } }
+    for (const B of this.buildings) if (B) { B.cx = B.bn ? (B.bx / B.bn + 0.5) / RES : (B.x0 + B.x1) / 2; B.cz = B.bn ? (B.bz / B.bn + 0.5) / RES : (B.z0 + B.z1) / 2; }
     this.remainB = this.totalB;
     for (let cy = 0; cy < CY; cy++) for (let cz = 0; cz < CZ; cz++) for (let cx = 0; cx < CX; cx++) { this.chunks.push({ cx, cy, cz, lit: null, glow: null }); this.dirty.add(this.chunks.length - 1); }
-    this.rebuild(9999);
+    this.rebuild(1e9);
   }
   markDirty(x, y, z) {
     const cx = (x / CS) | 0, cy = (y / CS) | 0, cz = (z / CS) | 0;
@@ -122,15 +131,22 @@ export class World {
     if (ly === 0) add(cx, cy - 1, cz); if (ly === CS - 1) add(cx, cy + 1, cz);
     if (lz === 0) add(cx, cy, cz - 1); if (lz === CS - 1) add(cx, cy, cz + 1);
   }
-  rebuild(max = 8) {
-    let n = 0;
+  chunkEmpty(c) {
+    const x0 = c.cx * CS, y0 = c.cy * CS, z0 = c.cz * CS, y1 = Math.min(GH, y0 + CS), v = this.vox;
+    for (let y = y0; y < y1; y++) for (let z = z0; z < z0 + CS; z++) { const o = z * GW + y * GW * GD; for (let x = x0; x < x0 + CS; x++) if (v[x + o]) return false; }
+    return true;
+  }
+  rebuild(max = 8, ms = Infinity) { // 每格最多重建 max 個分塊，且超過 ms 毫秒就留到下一格（避免大倒塌時卡頓）
+    let n = 0; const t0 = performance.now();
     for (const ci of this.dirty) {
-      if (n++ >= max) break;
+      if (n >= max || (n > 0 && performance.now() - t0 > ms)) break;
       this.dirty.delete(ci);
       const c = this.chunks[ci];
-      const res = meshVoxels(this.get, c.cx * CS, c.cy * CS, c.cz * CS, CS, Math.min(CS, H - c.cy * CS), CS, 0, 0, 0);
+      for (const k of ["lit", "glow"]) if (c[k]) { this.group.remove(c[k]); c[k].geometry.dispose(); c[k] = null; }
+      if (this.chunkEmpty(c)) continue; // 空的分塊不算進每格預算
+      n++;
+      const res = meshVoxels(this.get, c.cx * CS, c.cy * CS, c.cz * CS, CS, Math.min(CS, GH - c.cy * CS), CS, 0, 0, 0);
       for (const [k, mat, j] of [["lit", this.mats.lit, 0], ["glow", this.mats.glow, 1]]) {
-        if (c[k]) { this.group.remove(c[k]); c[k].geometry.dispose(); c[k] = null; }
         const g = toGeometry(res[j]); if (!g) continue;
         const mesh = new THREE.Mesh(g, mat); mesh.matrixAutoUpdate = false;
         if (j === 0) { mesh.castShadow = this.shadows; mesh.receiveShadow = this.shadows; }
@@ -148,66 +164,67 @@ export class World {
     this.markDirty(x, y, z); return m;
   }
   /**
-   * 球形破壞。opt: filter(m)→bool、noise、debris(cb)、maxDebris、skipCollapse
-   * 回傳 { n, score, glass, props, bids:Set, seeds:[] }
+   * 球形破壞（參數為公尺）。opt: filter(m)→bool、noise、debris(x,y,z,m) 公尺、maxDebris
+   * 回傳 { n(體素數), eq(換算成 1 公尺方塊的數量), score, glass, props, bids:Set, seeds:[] }
    */
-  destroySphere(cx, cy, cz, r, opt = {}) {
-    const res = { n: 0, score: 0, glass: 0, props: 0, bids: new Set(), cars: 0 };
-    const x0 = Math.max(0, Math.floor(cx - r - 1)), x1 = Math.min(W - 1, Math.ceil(cx + r + 1));
-    const y0 = Math.max(0, Math.floor(cy - r - 1)), y1 = Math.min(H - 1, Math.ceil(cy + r + 1));
-    const z0 = Math.max(0, Math.floor(cz - r - 1)), z1 = Math.min(D - 1, Math.ceil(cz + r + 1));
+  destroySphere(mx, my, mz, mr, opt = {}) {
+    const cx = mx * RES, cy = my * RES, cz = mz * RES, r = mr * RES;
+    const res = { n: 0, eq: 0, score: 0, glass: 0, props: 0, bids: new Set(), cars: 0 };
+    const x0 = Math.max(0, Math.floor(cx - r - 1)), x1 = Math.min(GW - 1, Math.ceil(cx + r + 1));
+    const y0 = Math.max(0, Math.floor(cy - r - 1)), y1 = Math.min(GH - 1, Math.ceil(cy + r + 1));
+    const z0 = Math.max(0, Math.floor(cz - r - 1)), z1 = Math.min(GD - 1, Math.ceil(cz + r + 1));
     const seeds = []; const removed = [];
-    const noise = opt.noise === undefined ? 0.8 : opt.noise;
+    const noise = (opt.noise === undefined ? 0.8 : opt.noise) * RES;
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
-      const i = x + z * W + y * W * D, m = this.vox[i]; if (!m) continue;
+      const i = x + z * GW + y * GW * GD, m = this.vox[i]; if (!m) continue;
       const dx = x + 0.5 - cx, dy = y + 0.5 - cy, dz = z + 0.5 - cz;
-      const rr = r + (hash3(x, y, z) - 0.5) * noise;
+      const rr = r + (hash3(x >> 1, y >> 1, z >> 1) - 0.5) * noise + (hash3(x, y, z) - 0.5) * 0.9; // 兩層雜訊 → 破口邊緣參差
       if (dx * dx + dy * dy + dz * dz > rr * rr) continue;
-      if (opt.filter && !opt.filter(m, x, y, z)) continue;
+      if (opt.filter && !opt.filter(m, x / RES, y / RES, z / RES)) continue;
       const b = this.bid[i]; if (b) res.bids.add(b);
       this.removeAt(i, x, y, z);
       res.n++; res.score += MAT[m].s; if (MAT[m].gl) res.glass++; if (MAT[m].p) res.props++; if (MAT[m].name === "car") res.cars++;
       removed.push(x, y, z, m);
     }
+    res.eq = res.n / RES2; res.glass /= RES2;
     if (!res.n) return res;
     if (opt.debris) {
       const cnt = removed.length / 4, maxD = opt.maxDebris || 40, step = Math.max(1, cnt / maxD);
-      for (let k = 0; k < cnt; k += step) { const j = (k | 0) * 4; opt.debris(removed[j] + 0.5, removed[j + 1] + 0.5, removed[j + 2] + 0.5, removed[j + 3]); }
+      for (let k = 0; k < cnt; k += step) { const j = (k | 0) * 4; opt.debris((removed[j] + 0.5) / RES, (removed[j + 1] + 0.5) / RES, (removed[j + 2] + 0.5) / RES, removed[j + 3]); }
     }
     // 倒塌判定的種子：被移除格子周圍的實心格
     for (let k = 0; k < removed.length; k += 4) {
       const x = removed[k], y = removed[k + 1], z = removed[k + 2];
-      if (this.at(x + 1, y, z)) seeds.push(x + 1, y, z); if (this.at(x - 1, y, z)) seeds.push(x - 1, y, z);
-      if (this.at(x, y + 1, z)) seeds.push(x, y + 1, z); if (this.at(x, y, z + 1)) seeds.push(x, y, z + 1);
-      if (this.at(x, y, z - 1)) seeds.push(x, y, z - 1);
+      if (this.vat(x + 1, y, z)) seeds.push(x + 1, y, z); if (this.vat(x - 1, y, z)) seeds.push(x - 1, y, z);
+      if (this.vat(x, y + 1, z)) seeds.push(x, y + 1, z); if (this.vat(x, y, z + 1)) seeds.push(x, y, z + 1);
+      if (this.vat(x, y, z - 1)) seeds.push(x, y, z - 1);
     }
     res.seeds = seeds;
     return res;
   }
-  /** 連通性支撐：從種子做 DFS（優先往下找），碰到 y=0 就算有支撐；整群找不到地面＝懸空 → 回傳該群體素並從世界移除 */
-  findFloating(seeds, limit = 40000) {
-    const out = [];
+  /** 連通性支撐：從種子做 DFS（優先往下找），碰到 y=0 就算有支撐；整群找不到地面＝懸空 → 回傳該群體素（體素座標）並從世界移除 */
+  findFloating(seeds, limit = 160000) {
+    const out = [], L = GW * GD;
     const gen = ++this.gen; const st = this.stamp, vox = this.vox;
-    const stack = [];
+    const stack = [], nb = [0, 0, 0, 0, 0, 0];
     for (let s = 0; s < seeds.length; s += 3) {
-      const sx = seeds[s], sy = seeds[s + 1], sz = seeds[s + 2];
-      const si = sx + sz * W + sy * W * D;
+      const si = seeds[s] + seeds[s + 2] * GW + seeds[s + 1] * L;
       if (!vox[si] || st[si] === gen || st[si] === -gen) continue;
-      // 新的搜尋：先標成 -gen（進行中），結束時若懸空則收集
       const comp = []; stack.length = 0; stack.push(si); st[si] = -gen; let grounded = false, overflow = false;
       while (stack.length) {
         const i = stack.pop(); comp.push(i);
-        const y = (i / (W * D)) | 0;
+        const y = (i / L) | 0;
         if (y === 0) { grounded = true; break; }
-        const r = i - y * W * D, z = (r / W) | 0, x = r - z * W;
+        const r = i - y * L, z = (r / GW) | 0, x = r - z * GW;
         // 推入順序：上、四周、下（下最後推 → 最先處理）
-        const nb = [];
-        if (y + 1 < H) nb.push(i + W * D);
-        if (x + 1 < W) nb.push(i + 1); if (x > 0) nb.push(i - 1);
-        if (z + 1 < D) nb.push(i + W); if (z > 0) nb.push(i - W);
-        nb.push(i - W * D);
+        let k = 0;
+        if (y + 1 < GH) nb[k++] = i + L;
+        if (x + 1 < GW) nb[k++] = i + 1; if (x > 0) nb[k++] = i - 1;
+        if (z + 1 < GD) nb[k++] = i + GW; if (z > 0) nb[k++] = i - GW;
+        nb[k++] = i - L;
         let hitOld = false;
-        for (const j of nb) {
+        for (let q = 0; q < k; q++) {
+          const j = nb[q];
           if (!vox[j]) continue;
           if (st[j] === gen) { hitOld = true; break; } // 碰到這一輪已確認有支撐的群 → 有支撐
           if (st[j] === -gen) continue;
@@ -219,27 +236,24 @@ export class World {
       if (grounded || overflow) {
         for (const i of comp) st[i] = gen; for (const i of stack) st[i] = gen;
       } else {
-        for (const i of comp) {
-          const y = (i / (W * D)) | 0, r = i - y * W * D, z = (r / W) | 0, x = r - z * W;
-          out.push(x, y, z, vox[i]);
-        }
-        for (const i of comp) { const y = (i / (W * D)) | 0, r = i - y * W * D, z = (r / W) | 0, x = r - z * W; this.removeAt(i, x, y, z); }
+        for (const i of comp) { const y = (i / L) | 0, r = i - y * L, z = (r / GW) | 0, x = r - z * GW; out.push(x, y, z, vox[i]); }
+        for (const i of comp) { const y = (i / L) | 0, r = i - y * L, z = (r / GW) | 0, x = r - z * GW; this.removeAt(i, x, y, z); }
       }
     }
     return out;
   }
-  /** 建築底部（y<3）剩不到 40% → 整棟結構失效，回傳剩餘體素並移除 */
+  /** 建築底部（最下 3 公尺）剩不到 42% → 整棟結構失效，回傳剩餘體素（體素座標）並移除 */
   checkBase(bids) {
-    const res = [];
+    const res = [], BY = 3 * RES;
     for (const b of bids) {
-      const B = this.buildings[b]; if (!B || B.collapsed || B.base0 < 6) continue;
+      const B = this.buildings[b]; if (!B || B.collapsed || B.base0 < 6 * RES2) continue;
       let cnt = 0;
-      for (let y = 0; y < 3; y++) for (let z = B.z0; z <= B.z1; z++) for (let x = B.x0; x <= B.x1; x++) { const i = this.idx(x, y, z); if (this.bid[i] === b && this.vox[i]) cnt++; }
+      for (let y = 0; y < BY; y++) for (let z = B.vz0; z <= B.vz1; z++) for (let x = B.vx0; x <= B.vx1; x++) { const i = this.idx(x, y, z); if (this.bid[i] === b && this.vox[i]) cnt++; }
       if (cnt < B.base0 * 0.42) {
         B.collapsed = true;
         const vox = [];
-        for (let y = 0; y < H; y++) for (let z = B.z0; z <= B.z1; z++) for (let x = B.x0; x <= B.x1; x++) {
-          const i = this.idx(x, y, z); if (this.bid[i] === b && this.vox[i]) { vox.push(x, y, z, this.vox[i]); }
+        for (let y = 0; y < GH; y++) for (let z = B.vz0; z <= B.vz1; z++) for (let x = B.vx0; x <= B.vx1; x++) {
+          const i = this.idx(x, y, z); if (this.bid[i] === b && this.vox[i]) vox.push(x, y, z, this.vox[i]);
         }
         for (let k = 0; k < vox.length; k += 4) this.removeAt(this.idx(vox[k], vox[k + 1], vox[k + 2]), vox[k], vox[k + 1], vox[k + 2]);
         res.push({ b: B, vox });
@@ -247,9 +261,10 @@ export class World {
     }
     return res;
   }
+  /** 某公尺位置 (x,z) 在高度 below（公尺）以下最高的實心頂面（公尺） */
   topSolid(x, z, below = H) {
-    x = Math.floor(x); z = Math.floor(z); if (x < 0 || z < 0 || x >= W || z >= D) return 0;
-    for (let y = Math.min(H, below) - 1; y >= 0; y--) if (this.vox[this.idx(x, y, z)]) return y + 1;
+    x = Math.floor(x * RES); z = Math.floor(z * RES); if (x < 0 || z < 0 || x >= GW || z >= GD) return 0;
+    for (let y = Math.min(GH, Math.floor(below * RES)) - 1; y >= 0; y--) if (this.vox[this.idx(x, y, z)]) return (y + 1) / RES;
     return 0;
   }
   dispose() {
