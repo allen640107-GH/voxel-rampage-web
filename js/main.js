@@ -241,12 +241,13 @@ function hit(x, y, z, r, opt = {}) {
 }
 function multOf(combo) { return 1 + Math.min(4, Math.floor(combo / 10) * 0.5); }
 let popI = 0; const pops = [];
-for (let i = 0; i < 10; i++) { const s = document.createElement("span"); s.style.display = "none"; $("pops").appendChild(s); pops.push({ el: s, t: 0, p: new THREE.Vector3() }); }
+for (let i = 0; i < 6; i++) { const s = document.createElement("span"); s.style.display = "none"; $("pops").appendChild(s); pops.push({ el: s, t: 0, p: new THREE.Vector3() }); }
 function addScore(base, x, y, z, label = "+") {
   G.mult = multOf(G.combo);
   const pts = Math.round(base * G.mult); if (!pts) return;
   G.score += pts;
-  const P = pops[popI++ % pops.length]; P.t = 1; P.p.set(x, y, z); P.el.textContent = label + pts; P.el.style.display = "block";
+  if (pts < 300 && label === "+") return; // 小分數不跳字，避免畫面擠滿數字
+  const P = pops[popI++ % pops.length]; P.t = 1; P.p.set(x, y, z); P.dx = (Math.random() - 0.5) * 60; P.el.textContent = label + pts; P.el.style.display = "block";
   P.el.style.color = pts >= 1000 ? "#ffd25e" : "#ffffff";
 }
 let bannerT = 0;
@@ -466,10 +467,10 @@ function updateHud(dt) {
   const w = innerWidth, h = innerHeight;
   for (const P of pops) {
     if (P.t <= 0) continue; P.t -= dt * 0.8;
-    if (P.t <= 0) { P.el.style.display = "none"; continue; }
+    if (P.t <= 0 || bannerT > 0) { P.el.style.display = "none"; if (bannerT > 0) P.t = 0; continue; } // 大字橫幅出現時不跳分數，避免重疊
     tmpV.copy(P.p); tmpV.y += (1 - P.t) * 4; tmpV.project(camera);
     if (tmpV.z > 1) { P.el.style.display = "none"; continue; }
-    P.el.style.display = "block"; P.el.style.left = ((tmpV.x + 1) / 2 * w) + "px"; P.el.style.top = ((1 - tmpV.y) / 2 * h) + "px"; P.el.style.opacity = Math.min(1, P.t * 2);
+    P.el.style.display = "block"; P.el.style.left = ((tmpV.x + 1) / 2 * w + (P.dx || 0)) + "px"; P.el.style.top = ((1 - tmpV.y) / 2 * h) + "px"; P.el.style.opacity = Math.min(1, P.t * 2);
   }
 }
 

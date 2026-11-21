@@ -87,6 +87,8 @@ async def main():
         await pg.wait_for_function("__vr.G.playing===true", timeout=60000); await pg.wait_for_timeout(1500)
         await music_ok("in-game music", want="level1")
         await pg.screenshot(path=f"{OUT}/{D}_05_game.png")
+        fill = await pg.evaluate("(()=>{const c=document.querySelector('#cv').getBoundingClientRect();return [c.left,c.top,c.width,c.height,innerWidth,innerHeight,document.querySelector('#cv').width]})()")
+        check(fill[0] == 0 and fill[1] == 0 and abs(fill[2] - W) < 1 and abs(fill[3] - H) < 1 and fill[6] >= W, f"game canvas fills the whole screen {fill}")
         for sel in ("#hPause", "#hScore", "#hTime", ".ab[data-k='0']", ".ab[data-k='3']"): check(await in_view(sel), f"HUD {sel} fully on screen")
         hf = await pg.evaluate("[parseFloat(getComputedStyle(document.querySelector('#hScore')).fontSize),parseFloat(getComputedStyle(document.querySelector('.ab b')).fontSize),getComputedStyle(document.querySelector('.ab b')).fontWeight]")
         check(hf[0] >= 24 and hf[1] >= 20 and int(hf[2]) >= 800, f"HUD text big & bold {hf}")
